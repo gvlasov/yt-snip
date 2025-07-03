@@ -1,0 +1,180 @@
+#!/bin/bash
+
+# yt-snip - Download and crop YouTube videos with caching
+# Usage: yt-snip <youtube_url> <start_time> <end_time>
+
+set -e
+
+# Configuration
+CACHE_DIR="$HOME/.cache/yt-snip"
+CACHE_DAYS=10
+OUTPUT_FILE="./snip.mp4"
+
+# Configurable commands
+YT_DLP_CMD="yt-dlp"
+FFMPEG_CMD="ffmpeg"
+PLAYER_CMD="mplayer"
+
+# yt-dlp options
+YT_DLP_FORMAT="best[ext=mp4]/best"
+YT_DLP_OUTPUT="${video_id}.%(ext)s"
+
+# ffmpeg options
+FFMPEG_VIDEO_CODEC="libx264"
+FFMPEG_AUDIO_CODEC="aac"
+FFMPEG_PRESET="medium"
+FFMPEG_CRF="23"
+
+# mplayer options
+MPLAYER_OPTS=""  # Add any mplayer options here, e.g., "-fs" for fullscreen
+
+# Create cache directory if it doesn't exist
+mkdir -p "$CACHE_DIR"
+
+# Function to show usage
+usage() {
+    echo "Usage: $0 <youtube_url> <start_time> <end_time>"
+    echo "Example: $0 https://www.youtube.com/watch?v=eDwKSoGrQJ4 00:01:35.6 00:01:46.1"
+    exit 1
+}
+
+# Function to extract video ID from YouTube URL
+extract_video_id() {
+    local url="$1"
+    echo "$url" | grep -oP '(?<=v=)[^&]*|(?<=youtu\.be/)[^&]*' | head -1
+}
+
+# Function to clean old cache files
+clean_cache() {
+    echo "Cleaning cache files older than $CACHE_DAYS days..."
+    find "$CACHE_DIR" -name "*.mp4" -type f -mtime +$CACHE_DAYS -delete 2>/dev/null || true
+    find "$CACHE_DIR" -name "*.webm" -type f -mtime +$CACHE_DAYS -delete 2>/dev/null || true
+    find "$CACHE_DIR" -name "*.mkv" -type f -mtime +$CACHE_DAYS -delete 2>/dev/null || true
+}
+
+# Function to download video if not cached
+download_video() {
+    local url="$1"
+    local video_id="$2"
+    
+    # Look for existing cached video with any extension
+    local cached_file=$(find "$CACHE_DIR" -name "${video_id}.*" -type f 2>/dev/null | head -1)
+    
+    if [ -n "$cached_file" ] && [ -f "$cached_file" ]; then
+        echo "Found cached video: $cached_file" >&2
+        echo "$cached_file"
+        return 0
+    fi
+    
+    echo "Downloading video from YouTube..." >&2
+    
+    # Change to cache directory and download
+    local old_pwd=$(pwd)
+    cd "$CACHE_DIR"
+    
+    # Download with yt-dlp, format selection for best quality
+    $YT_DLP_CMD -f "$YT_DLP_FORMAT" --output "${video_id}.%(ext)s" "$url" >&2
+    
+    # Return to original directory
+    cd "$old_pwd"
+    
+    # Find the downloaded file
+    local downloaded_file=$(find "$CACHE_DIR" -name "${video_id}.*" -type f 2>/dev/null | head -1)
+    
+    if [ -z "$downloaded_file" ] || [ ! -f "$downloaded_file" ]; then
+        echo "Error: Failed to download video" >&2
+        exit 1
+    fi
+    
+    echo "Downloaded: $downloaded_file" >&2
+    echo "$downloaded_file"
+}
+
+# Function to snip video
+snip_video() {
+    local input_file="$1"
+    local start_time="$2"
+    local end_time="$3"
+    local output_file="$4"
+    
+    echo "Cropping video from $start_time to $end_time..."
+    
+    # Use ffmpeg to snip the video
+    $FFMPEG_CMD -y -ss "$start_time" -to "$end_time" -i "$input_file" \
+        -c:v "$FFMPEG_VIDEO_CODEC" -c:a "$FFMPEG_AUDIO_CODEC" \
+        -preset "$FFMPEG_PRESET" -crf "$FFMPEG_CRF" \
+        "$output_file"
+    
+    echo "Cropped video saved to: $output_file"
+}
+
+# Function to play video
+play_video() {
+    local video_file="$1"
+    
+    echo "Playing video with $PLAYER_CMD..."
+    $PLAYER_CMD $MPLAYER_OPTS "$video_file"
+}
+
+# Main script
+main() {
+    # Check arguments
+    if [ $# -ne 3 ]; then
+        usage
+    fi
+    
+    local youtube_url="$1"
+    local start_time="$2"
+    local end_time="$3"
+    
+    # Check if required tools are installed
+    if ! command -v $YT_DLP_CMD &> /dev/null; then
+        echo "Error: $YT_DLP_CMD is not installed. Please install it first."
+        echo "Install with: pip install yt-dlp"
+        exit 1
+    fi
+    
+    if ! command -v $FFMPEG_CMD &> /dev/null; then
+        echo "Error: $FFMPEG_CMD is not installed. Please install it first."
+        exit 1
+    fi
+    
+    if ! command -v $PLAYER_CMD &> /dev/null; then
+        echo "Error: $PLAYER_CMD is not installed. Please install it first."
+        echo "Install with your package manager (e.g., apt install mplayer, pacman -S mplayer)"
+        exit 1
+    fi
+    
+    # Extract video ID from URL
+    local video_id=$(extract_video_id "$youtube_url")
+    
+    if [ -z "$video_id" ]; then
+        echo "Error: Could not extract video ID from URL"
+        exit 1
+    fi
+    
+    echo "Video ID: $video_id"
+    
+    # Clean old cache files
+    clean_cache
+    
+    # Download video (or use cached version)
+    local video_file=$(download_video "$youtube_url" "$video_id")
+    
+    # Verify the file exists
+    if [ ! -f "$video_file" ]; then
+        echo "Error: Video file not found: $video_file"
+        exit 1
+    fi
+    
+    # Crop the video
+    snip_video "$video_file" "$start_time" "$end_time" "$OUTPUT_FILE"
+    
+    echo "Done! Cropped video is available at: $OUTPUT_FILE"
+    
+    # Play the snipped video
+    play_video "$OUTPUT_FILE"
+}
+
+# Run main function
+main "$@"
